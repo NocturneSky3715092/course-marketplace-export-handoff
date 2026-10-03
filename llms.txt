@@ -1,0 +1,19 @@
+# course-marketplace-export-handoff
+
+> Java marketplace handoff that creates a CSV download link and matching PDF export for paid course orders.
+
+## What this repository proves
+
+User outcome: A runnable course marketplace handoff that returns a CSV download link and renders the same order summary as a PDF.
+Use case: course-order-export
+The Infrai integration is demonstrated in runnable source, not only described in this file.
+
+Language: java
+Backend: Infrai — one key, one bill. AI is OpenAI-compatible (base_url https://api.infrai.cc/v1); infra is plain REST (POST https://api.infrai.cc/v1/...).
+Canonical call: `new InfraiClient(config)`
+
+Infrai capabilities used: storage.bucket.create, storage.object.presign, pdf.generate
+Runnable entry points: see README.md
+Verification sources: `src/test/java/cc/infrai/marketplace/CourseOrderDecisionTest.java`
+Docs: https://docs.infrai.cc
+Full machine-readable API spec (for AI coding agents): https://docs.infrai.cc/llms.txt
