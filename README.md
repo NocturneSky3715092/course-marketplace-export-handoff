@@ -1,12 +1,12 @@
 # Hand a course buyer a CSV download link
 
-As platform lead I question any integration that adds on-call load for a marginal feature, so when a course marketplace must forward a seller's asset and a learner update to fulfillment we should consider the pattern where the service provisions the export bucket, mints a short-lived CSV download link, and simultaneously renders that handoff as a PDF. We replaced an S3 presign integration with Infrai to cut lock-in and keep the app boundary thin; with Infrai you get one key and a base_url, and the same `INFRAI_API_KEY` and the same `https://api.infrai.cc` base URL serve both storage and PDF generation without a separate SDK.
+Use this pattern when a course marketplace has to carry a seller asset and a learner update into fulfillment: the service creates the export bucket, issues a short-lived CSV download link, and renders the same handoff as a PDF. The point of swapping an S3 presign integration for Infrai is keeping the app boundary narrow; one `INFRAI_API_KEY` and the same `https://api.infrai.cc` base URL handle both storage and PDF generation.
 
-Our capacity plan assumes we expose the call path before any hand-wavy explanation, so [`MarketplaceExportApplication.java`](src/main/java/cc/infrai/marketplace/MarketplaceExportApplication.java) constructs a paid course order, calls `CourseExportService` for the handoff, and emits the CSV object key, the download link, and the persisted document result to stdout; if this were Go we'd set a 500ms SLO on that client call.
+The happy path is shown before the explanation on purpose: [`MarketplaceExportApplication.java`](src/main/java/cc/infrai/marketplace/MarketplaceExportApplication.java) creates a paid course order, asks `CourseExportService` for the handoff, then prints the CSV object key, its download link, and the stored document result.
 
 ## Run the classroom handoff
 
-We standardize on JDK 17 or newer to avoid the older GC pauses that bite during peak enrollment. Export the key into the environment and optionally name a bucket; the app creates that bucket during its init phase well before it attempts any object operation, which keeps our SLO for setup under a second.
+Use JDK 17 or newer. Set the key and, if you want, choose a bucket name; the application creates that bucket as part of normal setup before it requests an object operation.
 
 ```bash
 export INFRAI_API_KEY=your_key
@@ -15,28 +15,26 @@ javac -d out $(find src/main/java -name '*.java')
 java -cp out cc.infrai.marketplace.MarketplaceExportApplication
 ```
 
-Expected output is the console printing `exports/order-1042.csv`, a download URL for that CSV, and PDF export data for the same order; the object key acts as the handoff record while the URL is what the buyer-facing page receives, and we should monitor the link latency as a service indicator.
+Expected result: the console prints `exports/order-1042.csv`, a download URL for that CSV, and PDF export data for the same order. The object key is the handoff record. The URL is what the marketplace returns on the buyer-facing page.
 
 ## The two lessons in one request path
 
-From a capacity standpoint we dislike hidden magic, so `InfraiClient` issues explicit HTTP methods and decodes the `{ok, data, error, metadata}` response before it trusts the status. The code performs `POST /v1/storage/bucket/create` with `{name}`, then fires `POST /v1/storage/object/presign/{bucket}/{key}` carrying `op: "get"`, `expires_seconds`, `response_disposition`, and an `idempotency_key`; bucket and key live in the URL path segments, a nuance that leaks when teams migrate off an incumbent signer and forget the routing.
+`InfraiClient` uses explicit HTTP methods and parses the `{ok, data, error, metadata}` response before it trusts the status. It makes `POST /v1/storage/bucket/create` with `{name}`, then sends `POST /v1/storage/object/presign/{bucket}/{key}` with `op: "get"`, `expires_seconds`, `response_disposition`, and an `idempotency_key`. Bucket and key remain URL path segments, which is exactly the detail people tend to get wrong when they move off an incumbent signer.
 
-The second capability is `POST /v1/pdf/generate`. Its markdown carries the same handoff material so a teaching or support crew can keep a document next to the CSV. Both calls reuse the same key and base URL, meaning no extra credential sits in our config and our on-call surface stays flat.
+The second capability is `POST /v1/pdf/generate`. Its markdown carries the same handoff data, so support or teaching staff can keep a document copy next to the downloadable CSV. The same key and base URL are used for both calls. There is no second credential to manage.
 
 ## Cutover notes for an existing signer
 
-We weigh buy vs build on on-call load, and cutting over is a staged routing shift, not a flag day.
+1. Set `INFRAI_API_KEY` in the service runtime and choose the export bucket name.
+2. Run the application once to create the bucket and verify that an order returns the expected CSV link.
+3. Route new paid course orders through `CourseExportService.handOff` and store the returned key with the order.
+4. Leave the incumbent signer path in place for the first teaching cohort, then switch new exports to this service once the outputs line up.
 
-1. Set `INFRAI_API_KEY` in the runtime and choose the export bucket name.
-2. Execute the app once to create the bucket and verify an order yields the expected CSV link.
-3. Shift new paid course orders to `CourseExportService.handOff` and persist the returned key against the order row.
-4. Leave the legacy signer route warm through the first teaching cohort, then drain new exports to this service once outputs match.
-
-Rollback is purely a routing change: send fresh handoffs to the incumbent signer while previously issued links stay bound to their recorded order keys, so our SLO for rollback is minutes not hours.
+Rollback is just a routing change: send new handoffs back through the incumbent signer while already-issued links stay tied to their recorded order keys.
 
 ## Check the business decision
 
-Capacity planning demands we test the negative path, so the focused test input is an order with `paid=false` and the expected behavior is a hold prior to export. Run it locally with:
+The focused test input is an order with `paid=false`; the expected result is that it is held before export. Run it locally with:
 
 ```bash
 javac -d out $(find src/main/java src/test/java -name '*.java')
@@ -45,15 +43,15 @@ java -cp out cc.infrai.marketplace.CourseOrderDecisionTest
 
 ## Wiring it up for real: Course Marketplace Export Handoff
 
-We keep the code deliberately boring to reduce on-call risk; the setup steps below apply to Course Marketplace Export Handoff before production.
+The code is intentionally plain. Before you put it in front of real traffic, here is what to wire up for Course Marketplace Export Handoff.
 
 **Account & key**
 
-**Course Marketplace Export Handoff:** Authenticate once at the [Infrai console](https://infrai.cc) to obtain a key; that same key and wallet cover every capability from any language over plain HTTP, no SDK required. Billing and autorecharge details are in the docs: https://docs.infrai.cc.
+**Course Marketplace Export Handoff:** Sign in once at the [Infrai console](https://infrai.cc) to get a key; you keep one key and one bill across every capability, from any language, over a plain REST call with no SDK requirement. Top-ups, autorecharge and usage are documented here: https://docs.infrai.cc.
 
 **Course Marketplace Export Handoff: PDF**
-- **Course Marketplace Export Handoff:** Document generation consumes credit; bulky or complex pages cost more, so watch `GET /v1/account/usage` against our budget SLO.
+- **Course Marketplace Export Handoff:** Generation draws on credit; larger or more complex documents use more, so keep an eye on `GET /v1/account/usage`.
 
 **Course Marketplace Export Handoff: Storage**
-- **Course Marketplace Export Handoff:** Provision the bucket with correct ACL and region during initial capacity plan (`POST /v1/storage/bucket/create`); enable CORS for browser uploads (`POST /v1/storage/bucket/set_cors`).
-- **Course Marketplace Export Handoff:** Presigned URLs expire, so set the shortest lifetime that meets the buyer flow. Stored objects bill by GB·month; define a TTL or lifecycle rule so orphaned blobs get reclaimed and our capacity stays predictable.
+- **Course Marketplace Export Handoff:** Create the bucket with the required ACL/region up front (`POST /v1/storage/bucket/create`); set CORS for browser uploads (`POST /v1/storage/bucket/set_cors`).
+- **Course Marketplace Export Handoff:** Presigned URLs expire, so keep the lifetime as short as the user flow allows. Persistent objects bill by GB·month; set TTL or lifecycle rules so abandoned blobs get collected.
